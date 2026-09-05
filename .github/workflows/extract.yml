@@ -2,7 +2,9 @@ name: EVM Blockwise Extractor
 
 on:
   workflow_dispatch:
+
     inputs:
+
       chain:
         description: "Blockchain"
         required: true
@@ -19,7 +21,7 @@ on:
         default: "70100"
 
       batch_size:
-        description: "Blocks per RPC batch"
+        description: "RPC batch size"
         required: true
         default: "5"
 
@@ -28,75 +30,210 @@ on:
         required: true
         default: "4"
 
+      release_tag:
+        description: "GitHub Release tag"
+        required: true
+        default: "extract-bnb-70000-70100"
+
+
+# ============================================================
+# GITHUB PERMISSION
+# ============================================================
+
+permissions:
+  contents: write
+
+
+# ============================================================
+# JOB
+# ============================================================
+
 jobs:
+
   extract:
+
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: write
-
     env:
+
+      # IMPORTANT:
+      # Required for:
+      # gh release upload
+      #
+      GH_TOKEN: ${{ github.token }}
+
       CHAIN: ${{ inputs.chain }}
+
       START_BLOCK: ${{ inputs.start_block }}
+
       END_BLOCK: ${{ inputs.end_block }}
+
       BATCH_SIZE: ${{ inputs.batch_size }}
+
       CONCURRENCY: ${{ inputs.concurrency }}
 
+      RELEASE_TAG: ${{ inputs.release_tag }}
+
+      CARGO_TERM_COLOR: always
+
+      RUST_BACKTRACE: 1
+
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+
+      # ======================================================
+      # CHECKOUT
+      # ======================================================
+
+      - name: Checkout repository
+
+        uses: actions/checkout@v5
+
+
+      # ======================================================
+      # RUST
+      # ======================================================
 
       - name: Install Rust
+
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install GitHub CLI
+
+      # ======================================================
+      # GITHUB CLI
+      # ======================================================
+
+      - name: Check GitHub CLI
+
         run: |
+
+          echo "=============================================="
+          echo "GITHUB CLI"
+          echo "=============================================="
+
           gh --version
 
-      - name: Create Release
-        id: release
-        env:
-          GH_TOKEN: ${{ github.token }}
+          echo ""
+          echo "Checking GitHub authentication..."
+
+          gh auth status
+
+
+      # ======================================================
+      # BUILD
+      # ======================================================
+
+      - name: Build extractor
+
         run: |
-          TAG="extract-${CHAIN}-${START_BLOCK}-${END_BLOCK}"
 
-          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "=============================================="
+          echo "BUILDING EVM BLOCKWISE EXTRACTOR"
+          echo "=============================================="
 
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release already exists: $TAG"
-          else
-            gh release create "$TAG" \
-              --title "$TAG" \
-              --notes "Blockwise extraction: ${CHAIN} ${START_BLOCK}-${END_BLOCK}"
-          fi
-
-      - name: Build
-        run: |
           cargo build --release
 
+          echo ""
+          echo "Build completed successfully."
+
+          ls -lh target/release/evm-blockwise
+
+
+      # ======================================================
+      # RUN
+      # ======================================================
+
       - name: Run extractor
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ env.TAG }}
+
         run: |
+
           set -e
 
+          echo ""
+          echo "======================================================="
+          echo "        EVM BLOCKWISE ADDRESS EXTRACTOR v2.4"
+          echo "======================================================="
+          echo ""
+
+          echo "Chain       : ${CHAIN}"
+          echo "Start Block : ${START_BLOCK}"
+          echo "End Block   : ${END_BLOCK}"
+          echo "Batch Size  : ${BATCH_SIZE}"
+          echo "Concurrency : ${CONCURRENCY}"
+          echo ""
+          echo "RPC rotation: every 20,000 blocks"
+          echo "RPC wait    : 10 seconds"
+          echo ""
+          echo "======================================================="
+
           ./target/release/evm-blockwise \
-            --chain "$CHAIN" \
-            --start-block "$START_BLOCK" \
-            --end-block "$END_BLOCK" \
-            --batch-size "$BATCH_SIZE" \
-            --concurrency "$CONCURRENCY"
+            --chain "${CHAIN}" \
+            --start-block "${START_BLOCK}" \
+            --end-block "${END_BLOCK}" \
+            --batch-size "${BATCH_SIZE}" \
+            --concurrency "${CONCURRENCY}"
+
+
+      # ======================================================
+      # SHOW GENERATED FILES
+      # ======================================================
 
       - name: Generated files
+
         if: always()
+
         run: |
+
+          echo ""
           echo "=============================================="
           echo "GENERATED FILES"
           echo "=============================================="
 
           if [ -d output ]; then
-            find output -type f -maxdepth 2 -print
+
+            find output \
+              -maxdepth 1 \
+              -type f \
+              -printf "%f %s bytes\n"
+
           else
+
             echo "No output directory."
+
           fi
+
+
+      # ======================================================
+      # DISK STATUS
+      # ======================================================
+
+      - name: Disk status
+
+        if: always()
+
+        run: |
+
+          echo ""
+          echo "=============================================="
+          echo "DISK STATUS"
+          echo "=============================================="
+
+          df -h
+
+
+      # ======================================================
+      # MEMORY STATUS
+      # ======================================================
+
+      - name: Memory status
+
+        if: always()
+
+        run: |
+
+          echo ""
+          echo "=============================================="
+          echo "MEMORY STATUS"
+          echo "=============================================="
+
+          free -h
