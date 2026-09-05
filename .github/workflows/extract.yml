@@ -30,7 +30,6 @@ on:
         default: "5000000"
         type: string
 
-
 jobs:
   extract:
     runs-on: ubuntu-latest
@@ -40,93 +39,56 @@ jobs:
       contents: write
 
     steps:
-
-      # ======================================================
-      # CHECKOUT
-      # ======================================================
-
       - name: Checkout Repository
         uses: actions/checkout@v4
-
-
-      # ======================================================
-      # RUST
-      # ======================================================
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-
-      # ======================================================
-      # RUST CACHE
-      # ======================================================
-
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-
-      # ======================================================
-      # GITHUB CLI
-      # ======================================================
-
       - name: Verify GitHub CLI
-        run: |
-          gh --version
-
-
-      # ======================================================
-      # VALIDATE INPUT
-      # ======================================================
+        run: gh --version
 
       - name: Validate Block Range
         env:
           START_BLOCK: ${{ inputs.start_block }}
           END_BLOCK: ${{ inputs.end_block }}
+          CHAIN: ${{ inputs.chain }}
         run: |
           set -e
 
           echo "=============================================="
           echo "VALIDATING BLOCK RANGE"
           echo "=============================================="
-
-          echo "Chain       : ${{ inputs.chain }}"
+          echo "Chain       : $CHAIN"
           echo "Start Block : $START_BLOCK"
           echo "End Block   : $END_BLOCK"
 
           if ! [[ "$START_BLOCK" =~ ^[0-9]+$ ]]; then
-            echo "ERROR: start_block must contain only numbers."
+            echo "ERROR: Invalid start block."
             exit 1
           fi
 
           if ! [[ "$END_BLOCK" =~ ^[0-9]+$ ]]; then
-            echo "ERROR: end_block must contain only numbers."
+            echo "ERROR: Invalid end block."
             exit 1
           fi
 
           if [ "$START_BLOCK" -gt "$END_BLOCK" ]; then
-            echo "ERROR: start_block cannot be greater than end_block."
+            echo "ERROR: Start block is greater than end block."
             exit 1
           fi
 
           TOTAL=$((END_BLOCK - START_BLOCK + 1))
 
-          echo "Total Blocks : $TOTAL"
-
+          echo "Total Blocks: $TOTAL"
           echo "=============================================="
-
-
-      # ======================================================
-      # BUILD
-      # ======================================================
 
       - name: Build Release
         run: |
           cargo build --release
-
-
-      # ======================================================
-      # CREATE GITHUB RELEASE
-      # ======================================================
 
       - name: Create GitHub Release
         env:
@@ -150,11 +112,6 @@ jobs:
           gh release create "$TAG" \
             --title "${CHAIN} blocks ${START_BLOCK}-${END_BLOCK}" \
             --notes "Address extraction for ${CHAIN} blocks ${START_BLOCK} to ${END_BLOCK}."
-
-
-      # ======================================================
-      # RUN EXTRACTOR
-      # ======================================================
 
       - name: Run Extraction
         env:
@@ -181,11 +138,6 @@ jobs:
             --start-block "$START_BLOCK" \
             --end-block "$END_BLOCK"
 
-
-      # ======================================================
-      # SHOW OUTPUT
-      # ======================================================
-
       - name: List Generated Files
         if: always()
         run: |
@@ -198,11 +150,6 @@ jobs:
           else
             echo "No output directory."
           fi
-
-
-      # ======================================================
-      # FINAL STATUS
-      # ======================================================
 
       - name: Extraction Complete
         if: success()
@@ -217,6 +164,5 @@ jobs:
           echo "Chain       : $CHAIN"
           echo "Start Block : $START_BLOCK"
           echo "End Block   : $END_BLOCK"
-          echo "Release     : $RELEASE_TAG"
           echo "=============================================="
 ```
