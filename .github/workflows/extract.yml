@@ -7,15 +7,6 @@ on:
         description: "Blockchain"
         required: true
         default: "bnb"
-        type: choice
-        options:
-          - bnb
-          - ethereum
-          - polygon
-          - arbitrum
-          - base
-          - optimism
-          - avalanche_c
 
       start_block:
         description: "Start block"
@@ -37,110 +28,56 @@ on:
         required: true
         default: "4"
 
-      release_tag:
-        description: "GitHub Release tag"
-        required: true
-        default: "extract-bnb-70000-70100"
-
-permissions:
-  contents: write
-
 jobs:
   extract:
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: write
+
     env:
-      GH_TOKEN: ${{ github.token }}
+      CHAIN: ${{ inputs.chain }}
+      START_BLOCK: ${{ inputs.start_block }}
+      END_BLOCK: ${{ inputs.end_block }}
+      BATCH_SIZE: ${{ inputs.batch_size }}
+      CONCURRENCY: ${{ inputs.concurrency }}
 
     steps:
-
-      # ======================================================
-      # CHECKOUT
-      # ======================================================
-
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ======================================================
-      # RUST
-      # ======================================================
-
-      - name: Setup Rust
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # ======================================================
-      # CACHE
-      # ======================================================
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-
-      # ======================================================
-      # CREATE RELEASE
-      # ======================================================
-
-      - name: Create GitHub Release
-        shell: bash
+      - name: Install GitHub CLI
         run: |
-          set -e
+          gh --version
 
-          TAG="${{ inputs.release_tag }}"
+      - name: Create Release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="extract-${CHAIN}-${START_BLOCK}-${END_BLOCK}"
 
-          echo "=============================================="
-          echo "CREATING / CHECKING GITHUB RELEASE"
-          echo "=============================================="
-          echo "Tag: $TAG"
-          echo "=============================================="
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release already exists."
+            echo "Release already exists: $TAG"
           else
-            echo "Creating release..."
             gh release create "$TAG" \
               --title "$TAG" \
-              --notes "EVM blockwise address extraction"
+              --notes "Blockwise extraction: ${CHAIN} ${START_BLOCK}-${END_BLOCK}"
           fi
-
-      # ======================================================
-      # BUILD
-      # ======================================================
 
       - name: Build
         run: |
           cargo build --release
 
-      # ======================================================
-      # SHOW CONFIG
-      # ======================================================
-
-      - name: Show Configuration
-        shell: bash
-        run: |
-          echo "=============================================="
-          echo "EXTRACTION CONFIGURATION"
-          echo "=============================================="
-          echo "Chain       : ${{ inputs.chain }}"
-          echo "Start Block : ${{ inputs.start_block }}"
-          echo "End Block   : ${{ inputs.end_block }}"
-          echo "Batch Size  : ${{ inputs.batch_size }}"
-          echo "Concurrency : ${{ inputs.concurrency }}"
-          echo "Release     : ${{ inputs.release_tag }}"
-          echo "=============================================="
-
-      # ======================================================
-      # RUN EXTRACTOR
-      # ======================================================
-
-      - name: Run Extractor
-        shell: bash
+      - name: Run extractor
         env:
-          CHAIN: ${{ inputs.chain }}
-          START_BLOCK: ${{ inputs.start_block }}
-          END_BLOCK: ${{ inputs.end_block }}
-          BATCH_SIZE: ${{ inputs.batch_size }}
-          CONCURRENCY: ${{ inputs.concurrency }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ env.TAG }}
         run: |
           set -e
 
@@ -151,20 +88,15 @@ jobs:
             --batch-size "$BATCH_SIZE" \
             --concurrency "$CONCURRENCY"
 
-      # ======================================================
-      # SHOW GENERATED FILES
-      # ======================================================
-
-      - name: Show Generated Files
+      - name: Generated files
         if: always()
-        shell: bash
         run: |
           echo "=============================================="
           echo "GENERATED FILES"
           echo "=============================================="
 
           if [ -d output ]; then
-            find output -type f -maxdepth 2 -print -exec ls -lh {} \;
+            find output -type f -maxdepth 2 -print
           else
             echo "No output directory."
           fi
