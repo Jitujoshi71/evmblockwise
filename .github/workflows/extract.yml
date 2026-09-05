@@ -1,0 +1,161 @@
+name: EVM Block Range Address Extractor
+
+on:
+  workflow_dispatch:
+    inputs:
+      chain:
+        description: "Select EVM Chain"
+        required: true
+        default: "bnb"
+        type: choice
+        options:
+          - bnb
+          - ethereum
+          - polygon
+          - arbitrum
+          - base
+          - optimism
+          - avalanche_c
+
+      start_block:
+        description: "Start Block Number"
+        required: true
+        default: "60000000"
+        type: string
+
+      end_block:
+        description: "End Block Number"
+        required: true
+        default: "60001000"
+        type: string
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    permissions:
+      contents: write
+
+    steps:
+
+      # ======================================================
+      # CHECKOUT
+      # ======================================================
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ======================================================
+      # RUST
+      # ======================================================
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # ======================================================
+      # CACHE
+      # ======================================================
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      # ======================================================
+      # INSTALL GH CLI
+      # ======================================================
+
+      - name: Verify GitHub CLI
+        run: |
+          gh --version
+
+      # ======================================================
+      # VALIDATE INPUT
+      # ======================================================
+
+      - name: Validate Block Range
+        run: |
+          START="${{ inputs.start_block }}"
+          END="${{ inputs.end_block }}"
+
+          if ! [[ "$START" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: start_block must contain only numbers."
+            exit 1
+          fi
+
+          if ! [[ "$END" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: end_block must contain only numbers."
+            exit 1
+          fi
+
+          if [ "$START" -gt "$END" ]; then
+            echo "ERROR: start_block cannot be greater than end_block."
+            exit 1
+          fi
+
+          echo "=============================================="
+          echo "BLOCK RANGE"
+          echo "=============================================="
+          echo "Chain       : ${{ inputs.chain }}"
+          echo "Start Block : $START"
+          echo "End Block   : $END"
+          echo "=============================================="
+
+      # ======================================================
+      # BUILD
+      # ======================================================
+
+      - name: Build Release
+        run: |
+          cargo build --release
+
+      # ======================================================
+      # CREATE RELEASE
+      # ======================================================
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="extract-${{ inputs.chain }}-${{ inputs.start_block }}-${{ inputs.end_block }}-$(date +%s)"
+
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+
+          gh release create "$TAG" \
+            --title "${{ inputs.chain }} blocks ${{ inputs.start_block }}-${
+          { inputs.end_block }}" \
+            --notes "Address extraction for ${{ inputs.chain }} blocks ${{ inputs.start_block }} to ${{ inputs.end_block }}."
+
+      # ======================================================
+      # RUN EXTRACTOR
+      # ======================================================
+
+      - name: Run Extraction
+        env:
+          TARGET_CHAIN: ${{ inputs.chain }}
+          START_BLOCK: ${{ inputs.start_block }}
+          END_BLOCK: ${{ inputs.end_block }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+          RPC_URL: ${{ secrets.RPC_URL }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./target/release/evm-address-extractor \
+            --chain "${{ inputs.chain }}" \
+            --start-block "${{ inputs.start_block }}" \
+            --end-block "${{ inputs.end_block }}"
+
+      # ======================================================
+      # SHOW OUTPUT
+      # ======================================================
+
+      - name: List Generated Files
+        if: always()
+        run: |
+          echo "=============================================="
+          echo "GENERATED FILES"
+          echo "=============================================="
+
+          if [ -d output ]; then
+            ls -lh output/
+          else
+            echo "No output directory."
+          fi
