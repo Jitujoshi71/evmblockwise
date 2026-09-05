@@ -1,3 +1,4 @@
+```yaml
 name: EVM Block Range Address Extractor
 
 on:
@@ -20,14 +21,15 @@ on:
       start_block:
         description: "Start Block Number"
         required: true
-        default: "60000000"
+        default: "0"
         type: string
 
       end_block:
         description: "End Block Number"
         required: true
-        default: "60001000"
+        default: "5000000"
         type: string
+
 
 jobs:
   extract:
@@ -46,6 +48,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+
       # ======================================================
       # RUST
       # ======================================================
@@ -53,52 +56,64 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+
       # ======================================================
-      # CACHE
+      # RUST CACHE
       # ======================================================
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
+
       # ======================================================
-      # INSTALL GH CLI
+      # GITHUB CLI
       # ======================================================
 
       - name: Verify GitHub CLI
         run: |
           gh --version
 
+
       # ======================================================
       # VALIDATE INPUT
       # ======================================================
 
       - name: Validate Block Range
+        env:
+          START_BLOCK: ${{ inputs.start_block }}
+          END_BLOCK: ${{ inputs.end_block }}
         run: |
-          START="${{ inputs.start_block }}"
-          END="${{ inputs.end_block }}"
+          set -e
 
-          if ! [[ "$START" =~ ^[0-9]+$ ]]; then
+          echo "=============================================="
+          echo "VALIDATING BLOCK RANGE"
+          echo "=============================================="
+
+          echo "Chain       : ${{ inputs.chain }}"
+          echo "Start Block : $START_BLOCK"
+          echo "End Block   : $END_BLOCK"
+
+          if ! [[ "$START_BLOCK" =~ ^[0-9]+$ ]]; then
             echo "ERROR: start_block must contain only numbers."
             exit 1
           fi
 
-          if ! [[ "$END" =~ ^[0-9]+$ ]]; then
+          if ! [[ "$END_BLOCK" =~ ^[0-9]+$ ]]; then
             echo "ERROR: end_block must contain only numbers."
             exit 1
           fi
 
-          if [ "$START" -gt "$END" ]; then
+          if [ "$START_BLOCK" -gt "$END_BLOCK" ]; then
             echo "ERROR: start_block cannot be greater than end_block."
             exit 1
           fi
 
+          TOTAL=$((END_BLOCK - START_BLOCK + 1))
+
+          echo "Total Blocks : $TOTAL"
+
           echo "=============================================="
-          echo "BLOCK RANGE"
-          echo "=============================================="
-          echo "Chain       : ${{ inputs.chain }}"
-          echo "Start Block : $START"
-          echo "End Block   : $END"
-          echo "=============================================="
+
 
       # ======================================================
       # BUILD
@@ -108,22 +123,34 @@ jobs:
         run: |
           cargo build --release
 
+
       # ======================================================
-      # CREATE RELEASE
+      # CREATE GITHUB RELEASE
       # ======================================================
 
-      - name: Create Release
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHAIN: ${{ inputs.chain }}
+          START_BLOCK: ${{ inputs.start_block }}
+          END_BLOCK: ${{ inputs.end_block }}
         run: |
-          TAG="extract-${{ inputs.chain }}-${{ inputs.start_block }}-${{ inputs.end_block }}-$(date +%s)"
+          set -e
+
+          TAG="extract-${CHAIN}-${START_BLOCK}-${END_BLOCK}-$(date +%s)"
 
           echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
 
+          echo "=============================================="
+          echo "CREATING RELEASE"
+          echo "=============================================="
+          echo "Tag: $TAG"
+          echo "=============================================="
+
           gh release create "$TAG" \
-            --title "${{ inputs.chain }} blocks ${{ inputs.start_block }}-${
-          { inputs.end_block }}" \
-            --notes "Address extraction for ${{ inputs.chain }} blocks ${{ inputs.start_block }} to ${{ inputs.end_block }}."
+            --title "${CHAIN} blocks ${START_BLOCK}-${END_BLOCK}" \
+            --notes "Address extraction for ${CHAIN} blocks ${START_BLOCK} to ${END_BLOCK}."
+
 
       # ======================================================
       # RUN EXTRACTOR
@@ -138,10 +165,22 @@ jobs:
           RPC_URL: ${{ secrets.RPC_URL }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -e
+
+          echo "=============================================="
+          echo "STARTING EXTRACTION"
+          echo "=============================================="
+          echo "Chain       : $TARGET_CHAIN"
+          echo "Start Block : $START_BLOCK"
+          echo "End Block   : $END_BLOCK"
+          echo "Release     : $RELEASE_TAG"
+          echo "=============================================="
+
           ./target/release/evm-address-extractor \
-            --chain "${{ inputs.chain }}" \
-            --start-block "${{ inputs.start_block }}" \
-            --end-block "${{ inputs.end_block }}"
+            --chain "$TARGET_CHAIN" \
+            --start-block "$START_BLOCK" \
+            --end-block "$END_BLOCK"
+
 
       # ======================================================
       # SHOW OUTPUT
@@ -155,7 +194,29 @@ jobs:
           echo "=============================================="
 
           if [ -d output ]; then
-            ls -lh output/
+            find output -maxdepth 1 -type f -printf "%f\n" | sort
           else
             echo "No output directory."
           fi
+
+
+      # ======================================================
+      # FINAL STATUS
+      # ======================================================
+
+      - name: Extraction Complete
+        if: success()
+        env:
+          CHAIN: ${{ inputs.chain }}
+          START_BLOCK: ${{ inputs.start_block }}
+          END_BLOCK: ${{ inputs.end_block }}
+        run: |
+          echo "=============================================="
+          echo "EXTRACTION COMPLETE"
+          echo "=============================================="
+          echo "Chain       : $CHAIN"
+          echo "Start Block : $START_BLOCK"
+          echo "End Block   : $END_BLOCK"
+          echo "Release     : $RELEASE_TAG"
+          echo "=============================================="
+```
