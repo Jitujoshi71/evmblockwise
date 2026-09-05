@@ -3,6 +3,7 @@ name: EVM Block Range Address Extractor
 on:
   workflow_dispatch:
     inputs:
+
       chain:
         description: "Select EVM Chain"
         required: true
@@ -38,11 +39,14 @@ on:
       concurrency:
         description: "Concurrent batches"
         required: true
-        default: "8"
+        default: "4"
         type: string
 
+
 jobs:
+
   extract:
+
     runs-on: ubuntu-latest
 
     timeout-minutes: 350
@@ -59,50 +63,51 @@ jobs:
 
     steps:
 
-      # ============================================================
+      # ======================================================
       # CHECKOUT
-      # ============================================================
+      # ======================================================
 
       - name: Checkout Repository
         uses: actions/checkout@v4
 
 
-      # ============================================================
+      # ======================================================
       # RUST
-      # ============================================================
+      # ======================================================
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
 
-      # ============================================================
+      # ======================================================
       # CACHE
-      # ============================================================
+      # ======================================================
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
 
-      # ============================================================
-      # INSTALL GITHUB CLI
-      # ============================================================
+      # ======================================================
+      # GITHUB CLI
+      # ======================================================
 
-      - name: Setup GitHub CLI
+      - name: Check GitHub CLI
         run: |
           gh --version
 
 
-      # ============================================================
-      # VALIDATE INPUTS
-      # ============================================================
+      # ======================================================
+      # VALIDATE INPUT
+      # ======================================================
 
-      - name: Validate Block Range
+      - name: Validate Inputs
         shell: bash
         run: |
+
           set -e
 
           echo "=============================================="
-          echo "BLOCK RANGE VALIDATION"
+          echo "INPUT VALIDATION"
           echo "=============================================="
 
           echo "Chain       : $CHAIN"
@@ -112,89 +117,94 @@ jobs:
           echo "Concurrency : $CONCURRENCY"
 
           if ! [[ "$START_BLOCK" =~ ^[0-9]+$ ]]; then
-            echo "ERROR: start_block must be a number"
+            echo "ERROR: Start block must be numeric."
             exit 1
           fi
 
           if ! [[ "$END_BLOCK" =~ ^[0-9]+$ ]]; then
-            echo "ERROR: end_block must be a number"
+            echo "ERROR: End block must be numeric."
             exit 1
           fi
 
           if ! [[ "$BATCH_SIZE" =~ ^[0-9]+$ ]]; then
-            echo "ERROR: batch_size must be a number"
+            echo "ERROR: Batch size must be numeric."
             exit 1
           fi
 
           if ! [[ "$CONCURRENCY" =~ ^[0-9]+$ ]]; then
-            echo "ERROR: concurrency must be a number"
+            echo "ERROR: Concurrency must be numeric."
             exit 1
           fi
 
           if [ "$START_BLOCK" -gt "$END_BLOCK" ]; then
-            echo "ERROR: start_block cannot be greater than end_block"
+            echo "ERROR: Start block cannot be greater than end block."
             exit 1
           fi
 
           if [ "$BATCH_SIZE" -lt 1 ]; then
-            echo "ERROR: batch_size must be >= 1"
+            echo "ERROR: Batch size must be >= 1."
             exit 1
           fi
 
           if [ "$CONCURRENCY" -lt 1 ]; then
-            echo "ERROR: concurrency must be >= 1"
+            echo "ERROR: Concurrency must be >= 1."
             exit 1
           fi
 
           echo ""
-          echo "Input validation OK."
+          echo "Validation successful."
 
 
-      # ============================================================
+      # ======================================================
       # BUILD
-      # ============================================================
+      # ======================================================
 
       - name: Build Rust Extractor
         run: |
           cargo build --release
 
 
-      # ============================================================
-      # CREATE RELEASE TAG
-      # ============================================================
+      # ======================================================
+      # CREATE RELEASE
+      # ======================================================
 
-      - name: Create Release
-        id: release
+      - name: Create GitHub Release
+        id: create_release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
         shell: bash
+
         run: |
+
           set -e
 
           TAG="extract-${CHAIN}-${START_BLOCK}-${END_BLOCK}-$(date +%s)"
 
-          echo "Release Tag: $TAG"
+          echo "Creating release:"
+          echo "$TAG"
 
           gh release create "$TAG" \
             --title "${CHAIN}: blocks ${START_BLOCK}-${END_BLOCK}" \
-            --notes "EVM address extraction for ${CHAIN}, blocks ${START_BLOCK}-${END_BLOCK}."
+            --notes "Address extraction for ${CHAIN}, blocks ${START_BLOCK}-${END_BLOCK}."
 
           echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
 
 
-      # ============================================================
+      # ======================================================
       # RUN EXTRACTOR
-      # ============================================================
+      # ======================================================
 
       - name: Run Block Extraction
         env:
           RELEASE_TAG: ${{ env.RELEASE_TAG }}
 
         run: |
+
           set -e
 
           echo "=============================================="
-          echo "STARTING BLOCK EXTRACTION"
+          echo "STARTING EVM BLOCK EXTRACTION"
           echo "=============================================="
 
           echo "Chain       : $CHAIN"
@@ -204,6 +214,8 @@ jobs:
           echo "Concurrency : $CONCURRENCY"
           echo "Release     : $RELEASE_TAG"
 
+          echo ""
+
           cargo run --release -- \
             --chain "$CHAIN" \
             --start-block "$START_BLOCK" \
@@ -212,40 +224,54 @@ jobs:
             --concurrency "$CONCURRENCY"
 
 
-      # ============================================================
-      # SHOW OUTPUT
-      # ============================================================
+      # ======================================================
+      # SHOW FILES
+      # ======================================================
 
       - name: Show Generated Files
         if: always()
+
         shell: bash
+
         run: |
+
           echo "=============================================="
           echo "GENERATED FILES"
           echo "=============================================="
 
           if [ -d output ]; then
-            find output -type f -printf "%p %s bytes\n" | sort
+
+            find output \
+              -type f \
+              -printf "%p %s bytes\n" \
+              | sort
+
           else
+
             echo "No output directory."
+
           fi
 
 
-      # ============================================================
-      # UPLOAD ANY REMAINING FILES
-      # ============================================================
+      # ======================================================
+      # UPLOAD REMAINING FILES
+      # ======================================================
 
-      - name: Upload Remaining Output
+      - name: Upload Remaining Files
         if: always()
+
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ env.RELEASE_TAG }}
+
         shell: bash
+
         run: |
+
           set -e
 
           if [ -z "$RELEASE_TAG" ]; then
-            echo "No release tag found."
+            echo "No release tag."
             exit 0
           fi
 
@@ -259,33 +285,41 @@ jobs:
           files=(output/*)
 
           if [ ${#files[@]} -eq 0 ]; then
-            echo "No files remaining in output."
+            echo "No remaining files."
             exit 0
           fi
 
           for file in "${files[@]}"; do
+
             if [ -f "$file" ]; then
-              echo "Uploading: $file"
+
+              echo "Uploading remaining file:"
+              echo "$file"
 
               gh release upload \
                 "$RELEASE_TAG" \
                 "$file" \
                 --clobber
+
             fi
+
           done
 
 
-      # ============================================================
-      # FINAL STATUS
-      # ============================================================
+      # ======================================================
+      # FINAL
+      # ======================================================
 
       - name: Final Status
         if: always()
+
         shell: bash
+
         run: |
+
           echo ""
           echo "=============================================="
-          echo "EXTRACTION JOB FINISHED"
+          echo "JOB FINISHED"
           echo "=============================================="
 
           echo "Chain       : $CHAIN"
@@ -294,7 +328,9 @@ jobs:
           echo "Release     : $RELEASE_TAG"
 
           if [ -d output ]; then
+
             echo ""
-            echo "Output:"
+            echo "Output directory:"
             ls -lah output
+
           fi
