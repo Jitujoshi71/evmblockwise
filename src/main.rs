@@ -5,6 +5,8 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::error::Error;
+use std::fmt;
 use std::fs::{self, File};
 use std::process::Command;
 use std::sync::Arc;
@@ -29,8 +31,8 @@ const DEFAULT_CONCURRENCY: usize = 4;
 // ============================================================
 
 fn rpc_list(chain: &str) -> Vec<String> {
-    match chain {
-        "bnb" => vec![
+    match chain.to_lowercase().as_str() {
+        "bnb" | "bsc" => vec![
             "https://bsc-dataseed.binance.org/".to_string(),
             "https://bsc-dataseed1.defibit.io/".to_string(),
             "https://bsc-dataseed1.ninicoin.io/".to_string(),
@@ -40,20 +42,20 @@ fn rpc_list(chain: &str) -> Vec<String> {
             "https://1rpc.io/bnb".to_string(),
         ],
 
-        "ethereum" => vec![
+        "ethereum" | "eth" => vec![
             "https://eth.llamarpc.com".to_string(),
             "https://cloudflare-eth.com".to_string(),
             "https://rpc.ankr.com/eth".to_string(),
             "https://1rpc.io/eth".to_string(),
         ],
 
-        "polygon" => vec![
+        "polygon" | "matic" => vec![
             "https://polygon-rpc.com".to_string(),
             "https://rpc.ankr.com/polygon".to_string(),
             "https://1rpc.io/matic".to_string(),
         ],
 
-        "arbitrum" => vec![
+        "arbitrum" | "arb" => vec![
             "https://arb1.arbitrum.io/rpc".to_string(),
             "https://rpc.ankr.com/arbitrum".to_string(),
             "https://1rpc.io/arb".to_string(),
@@ -65,13 +67,13 @@ fn rpc_list(chain: &str) -> Vec<String> {
             "https://1rpc.io/base".to_string(),
         ],
 
-        "optimism" => vec![
+        "optimism" | "op" => vec![
             "https://mainnet.optimism.io".to_string(),
             "https://optimism.llamarpc.com".to_string(),
             "https://1rpc.io/op".to_string(),
         ],
 
-        "avalanche_c" => vec![
+        "avalanche_c" | "avalanche" | "avax" => vec![
             "https://api.avax.network/ext/bc/C/rpc".to_string(),
             "https://rpc.ankr.com/avalanche".to_string(),
             "https://1rpc.io/avax/c".to_string(),
@@ -102,32 +104,27 @@ impl RpcError {
     }
 }
 
-// FIX:
-// Allows RpcError to work with ? and Box<dyn Error>
-impl std::fmt::Display for RpcError {
-    fn fmt(
-        &self,
-        f: &mut std::fmt::Formatter<'_>,
-    ) -> std::fmt::Result {
+impl fmt::Display for RpcError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.message)
     }
 }
 
-impl std::error::Error for RpcError {}
+impl Error for RpcError {}
 
 // ============================================================
-// PARSE HEX
+// HEX PARSER
 // ============================================================
 
 fn parse_hex_u64(value: &str) -> Result<u64, RpcError> {
-    let clean = value.trim_start_matches("0x");
+    let clean = value.trim().trim_start_matches("0x");
+
+    if clean.is_empty() {
+        return Err(RpcError::new("empty hexadecimal value"));
+    }
 
     u64::from_str_radix(clean, 16)
-        .map_err(|e| {
-            RpcError::new(
-                format!("invalid hex number: {}", e)
-            )
-        })
+        .map_err(|e| RpcError::new(format!("invalid hex number '{}': {}", value, e)))
 }
 
 // ============================================================
@@ -142,6 +139,10 @@ async fn request_batch(
     if blocks.is_empty() {
         return Ok(HashMap::new());
     }
+
+    // --------------------------------------------------------
+    // JSON-RPC batch payload
+    // --------------------------------------------------------
 
     let payload: Vec<Value> = blocks
         .iter()
@@ -164,105 +165,101 @@ async fn request_batch(
         .send()
         .await
         .map_err(|e| {
-            RpcError::new(
-                format!("HTTP request error: {}", e)
-            )
+            RpcError::new(format!(
+                "HTTP request error: {}",
+                e
+            ))
         })?;
 
     let status = response.status();
 
     if !status.is_success() {
-        return Err(
-            RpcError::new(
-                format!("HTTP status {}", status)
-            )
-        );
+        return Err(RpcError::new(format!(
+            "HTTP status {}",
+            status
+        )));
     }
 
     let text = response
         .text()
         .await
         .map_err(|e| {
-            RpcError::new(
-                format!("response body error: {}", e)
-            )
+            RpcError::new(format!(
+                "response body error: {}",
+                e
+            ))
         })?;
 
-    let parsed: Value =
-        serde_json::from_str(&text)
-            .map_err(|e| {
-                RpcError::new(
-                    format!(
-                        "invalid JSON: {} | body: {}",
-                        e,
-                        text.chars()
-                            .take(200)
-                            .collect::<String>()
-                    )
-                )
-            })?;
+    // --------------------------------------------------------
+    // Parse JSON
+    // --------------------------------------------------------
+
+    let parsed: Value = serde_json::from_str(&text)
+        .map_err(|e| {
+            RpcError::new(format!(
+                "invalid JSON: {} | body: {}",
+                e,
+                text.chars()
+                    .take(300)
+                    .collect::<String>()
+            ))
+        })?;
+
+    // --------------------------------------------------------
+    // Response must be an array
+    // --------------------------------------------------------
 
     let array = match parsed {
         Value::Array(arr) => arr,
 
         Value::Object(obj) => {
             if let Some(error) = obj.get("error") {
-                return Err(
-                    RpcError::new(
-                        format!(
-                            "RPC error: {}",
-                            error
-                        )
-                    )
-                );
+                return Err(RpcError::new(format!(
+                    "RPC error: {}",
+                    error
+                )));
             }
 
-            return Err(
-                RpcError::new(
-                    "RPC returned object instead of batch array"
-                )
-            );
+            return Err(RpcError::new(
+                "RPC returned object instead of batch array",
+            ));
         }
 
         _ => {
-            return Err(
-                RpcError::new(
-                    "RPC returned invalid JSON structure"
-                )
-            );
+            return Err(RpcError::new(
+                "RPC returned invalid JSON structure",
+            ));
         }
     };
 
-    // Every requested block must be present.
+    // --------------------------------------------------------
+    // Every requested block must be returned
+    // --------------------------------------------------------
 
     if array.len() != blocks.len() {
-        return Err(
-            RpcError::new(
-                format!(
-                    "incomplete batch: received {} / {} blocks",
-                    array.len(),
-                    blocks.len()
-                )
-            )
-        );
+        return Err(RpcError::new(format!(
+            "incomplete batch: received {} / {} blocks",
+            array.len(),
+            blocks.len()
+        )));
     }
 
     let requested: HashSet<u64> =
         blocks.iter().copied().collect();
 
     let mut results: HashMap<u64, Value> =
-        HashMap::with_capacity(blocks.len());
+        HashMap::new();
+
+    // --------------------------------------------------------
+    // Validate each block
+    // --------------------------------------------------------
 
     for item in array {
         if let Some(error) = item.get("error") {
-            return Err(
-                RpcError::new(
-                    format!(
-                        "RPC item error: {}",
-                        error
-                    )
-                )
-            );
+            return Err(RpcError::new(format!(
+                "RPC item error: {}",
+                error
+            )));
         }
 
         let id = item
@@ -270,93 +267,167 @@ async fn request_batch(
             .and_then(|v| v.as_u64())
             .ok_or_else(|| {
                 RpcError::new(
-                    "batch item missing numeric id"
+                    "batch item missing numeric id",
                 )
             })?;
 
         if !requested.contains(&id) {
-            return Err(
-                RpcError::new(
-                    format!(
-                        "unexpected block id {}",
-                        id
-                    )
-                )
-            );
+            return Err(RpcError::new(format!(
+                "unexpected block id {}",
+                id
+            )));
         }
 
         let result = item
             .get("result")
             .ok_or_else(|| {
-                RpcError::new(
-                    format!(
-                        "block {} missing result",
-                        id
-                    )
-                )
+                RpcError::new(format!(
+                    "block {} missing result",
+                    id
+                ))
             })?;
 
+        // ----------------------------------------------------
+        // Null block is not accepted
+        // ----------------------------------------------------
+
         if result.is_null() {
-            return Err(
-                RpcError::new(
-                    format!(
-                        "block {} returned null result",
-                        id
-                    )
-                )
-            );
+            return Err(RpcError::new(format!(
+                "block {} returned null result",
+                id
+            )));
         }
+
+        // ----------------------------------------------------
+        // Verify block number
+        // ----------------------------------------------------
 
         let block_number = result
             .get("number")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                RpcError::new(
-                    format!(
-                        "block {} missing block number",
-                        id
-                    )
-                )
+                RpcError::new(format!(
+                    "block {} missing block number",
+                    id
+                ))
             })?;
 
         let actual_number =
             parse_hex_u64(block_number)?;
 
         if actual_number != id {
-            return Err(
-                RpcError::new(
-                    format!(
-                        "block mismatch: requested {}, received {}",
-                        id,
-                        actual_number
-                    )
-                )
+            return Err(RpcError::new(format!(
+                "block mismatch: requested {}, received {}",
+                id,
+                actual_number
+            )));
+        }
+
+        // ----------------------------------------------------
+        // Verify transactions array
+        // ----------------------------------------------------
+
+        let transactions = result
+            .get("transactions")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| {
+                RpcError::new(format!(
+                    "block {} missing transactions array",
+                    id
+                ))
+            })?;
+
+        // ----------------------------------------------------
+        // DEBUG: transaction count
+        // ----------------------------------------------------
+
+        if !transactions.is_empty() {
+            println!(
+                "Validated block {} | Transactions: {}",
+                id,
+                transactions.len()
             );
         }
 
         results.insert(
             id,
-            result.clone()
+            result.clone(),
         );
     }
 
+    // --------------------------------------------------------
+    // Final validation
+    // --------------------------------------------------------
+
     if results.len() != blocks.len() {
-        return Err(
-            RpcError::new(
-                format!(
-                    "validation failed: {} / {} blocks",
-                    results.len(),
-                    blocks.len()
-                )
-            )
-        );
+        return Err(RpcError::new(format!(
+            "validation failed: {} / {} blocks",
+            results.len(),
+            blocks.len()
+        )));
     }
 
     Ok(results)
 }
 
 // ============================================================
-// RETRY A SINGLE BATCH ACROSS MULTIPLE RPCs
+// EXTRACT ADDRESSES FROM BATCH
+// ============================================================
+
+fn extract_addresses(
+    blocks: &[u64],
+    blocks_map: &HashMap<u64, Value>,
+) -> Result<(Vec<String>, usize), RpcError> {
+    let mut addresses: Vec<String> = Vec::new();
+
+    let mut transaction_count = 0usize;
+
+    for block_number in blocks {
+        let block = blocks_map
+            .get(block_number)
+            .ok_or_else(|| {
+                RpcError::new(format!(
+                    "missing validated block {}",
+                    block_number
+                ))
+            })?;
+
+        let transactions = block
+            .get("transactions")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| {
+                RpcError::new(format!(
+                    "block {} missing transactions array",
+                    block_number
+                ))
+            })?;
+
+        transaction_count += transactions.len();
+
+        for tx in transactions {
+            if let Some(from) =
+                tx.get("from").and_then(|v| v.as_str())
+            {
+                addresses.push(
+                    from.to_ascii_lowercase()
+                );
+            }
+
+            if let Some(to) =
+                tx.get("to").and_then(|v| v.as_str())
+            {
+                addresses.push(
+                    to.to_ascii_lowercase()
+                );
+            }
+        }
+    }
+
+    Ok((addresses, transaction_count))
+}
+
+// ============================================================
+// FETCH BATCH WITH RPC FAILOVER + RETRY
 // ============================================================
 
 async fn fetch_batch_with_retry(
@@ -379,6 +450,10 @@ async fn fetch_batch_with_retry(
             MAX_RETRY_ROUNDS
         );
 
+        // ----------------------------------------------------
+        // Try every RPC
+        // ----------------------------------------------------
+
         for (rpc_index, rpc) in
             rpcs.iter().enumerate()
         {
@@ -386,81 +461,43 @@ async fn fetch_batch_with_retry(
                 request_batch(
                     client,
                     rpc,
-                    &blocks
+                    &blocks,
                 )
                 .await;
 
             match result {
                 Ok(blocks_map) => {
-                    let mut addresses =
-                        Vec::new();
+                    match extract_addresses(
+                        &blocks,
+                        &blocks_map,
+                    ) {
+                        Ok((
+                            addresses,
+                            transaction_count,
+                        )) => {
+                            println!(
+                                "Batch {}-{} recovered using RPC #{} (attempt {}) | Transactions: {} | Addresses: {}",
+                                first_block,
+                                last_block,
+                                rpc_index + 1,
+                                retry_round,
+                                transaction_count,
+                                addresses.len()
+                            );
 
-                    let mut transaction_count =
-                        0usize;
+                            return Ok(addresses);
+                        }
 
-                    for block_number in
-                        &blocks
-                    {
-                        let block =
-                            blocks_map
-                                .get(block_number)
-                                .ok_or_else(|| {
-                                    RpcError::new(
-                                        format!(
-                                            "missing validated block {}",
-                                            block_number
-                                        )
-                                    )
-                                })?;
-
-                        let transactions =
-                            block
-                                .get("transactions")
-                                .and_then(|v| v.as_array())
-                                .ok_or_else(|| {
-                                    RpcError::new(
-                                        format!(
-                                            "block {} missing transactions array",
-                                            block_number
-                                        )
-                                    )
-                                })?;
-
-                        transaction_count +=
-                            transactions.len();
-
-                        for tx in transactions {
-                            if let Some(from) =
-                                tx.get("from")
-                                    .and_then(|v| v.as_str())
-                            {
-                                addresses.push(
-                                    from.to_ascii_lowercase()
-                                );
-                            }
-
-                            if let Some(to) =
-                                tx.get("to")
-                                    .and_then(|v| v.as_str())
-                            {
-                                addresses.push(
-                                    to.to_ascii_lowercase()
-                                );
-                            }
+                        Err(error) => {
+                            println!(
+                                "Batch {}-{} RPC #{} extraction validation failed: {}",
+                                first_block,
+                                last_block,
+                                rpc_index + 1,
+                                error
+                            );
                         }
                     }
-
-                    println!(
-                        "Batch {}-{} recovered using RPC #{} (attempt {}) | Transactions: {} | Addresses: {}",
-                        first_block,
-                        last_block,
-                        rpc_index + 1,
-                        retry_round,
-                        transaction_count,
-                        addresses.len()
-                    );
-
-                    return Ok(addresses);
                 }
 
                 Err(error) => {
@@ -475,33 +512,29 @@ async fn fetch_batch_with_retry(
             }
 
             // Small delay between providers.
-
-            sleep(
-                Duration::from_millis(250)
-            )
-            .await;
+            sleep(Duration::from_millis(250))
+                .await;
         }
 
-        // ====================================================
-        // ALL RPCs FAILED
-        // ====================================================
+        // ----------------------------------------------------
+        // All RPCs failed
+        // ----------------------------------------------------
 
         if retry_round < MAX_RETRY_ROUNDS {
             let multiplier =
                 2u64.saturating_pow(
                     (retry_round - 1)
-                        .min(4) as u32
+                        .min(4) as u32,
                 );
 
             let delay =
                 (
                     INITIAL_RETRY_DELAY_SECS
-                    * multiplier
+                        * multiplier
                 )
-                .min(
-                    MAX_RETRY_DELAY_SECS
-                );
+                .min(MAX_RETRY_DELAY_SECS);
 
+            println!();
             println!(
                 "ALL RPCs failed for batch {}-{}.",
                 first_block,
@@ -514,6 +547,7 @@ async fn fetch_batch_with_retry(
                 retry_round + 1,
                 MAX_RETRY_ROUNDS
             );
+            println!();
 
             sleep(
                 Duration::from_secs(delay)
@@ -522,20 +556,16 @@ async fn fetch_batch_with_retry(
         }
     }
 
-    Err(
-        RpcError::new(
-            format!(
-                "batch {}-{} failed after {} retry rounds across all RPCs",
-                first_block,
-                last_block,
-                MAX_RETRY_ROUNDS
-            )
-        )
-    )
+    Err(RpcError::new(format!(
+        "batch {}-{} failed after {} retry rounds across all RPCs",
+        first_block,
+        last_block,
+        MAX_RETRY_ROUNDS
+    )))
 }
 
 // ============================================================
-// UPLOAD FILE TO GITHUB RELEASE
+// UPLOAD TO GITHUB RELEASE
 // ============================================================
 
 fn upload_to_release(
@@ -543,23 +573,11 @@ fn upload_to_release(
     file_name: &str,
 ) -> bool {
     println!();
-    println!(
-        "=============================================="
-    );
+    println!("==============================================");
     println!("UPLOADING FILE");
-    println!(
-        "=============================================="
-    );
-
-    println!(
-        "File    : {}",
-        file_name
-    );
-
-    println!(
-        "Release : {}",
-        tag
-    );
+    println!("==============================================");
+    println!("File    : {}", file_name);
+    println!("Release : {}", tag);
 
     for attempt in 1..=5 {
         println!(
@@ -567,16 +585,15 @@ fn upload_to_release(
             attempt
         );
 
-        let status =
-            Command::new("gh")
-                .args([
-                    "release",
-                    "upload",
-                    tag,
-                    file_name,
-                    "--clobber",
-                ])
-                .status();
+        let status = Command::new("gh")
+            .args([
+                "release",
+                "upload",
+                tag,
+                file_name,
+                "--clobber",
+            ])
+            .status();
 
         match status {
             Ok(s) if s.success() => {
@@ -629,20 +646,16 @@ fn write_addresses_file(
     start_block: u64,
     end_block: u64,
     addresses: &HashSet<String>,
-) -> Result<
-    String,
-    Box<dyn std::error::Error>
-> {
+) -> Result<String, Box<dyn Error>> {
     fs::create_dir_all("output")?;
 
-    let file_name =
-        format!(
-            "output/{}_blocks_{}_to_{}_part_{:03}.csv.gz",
-            chain,
-            start_block,
-            end_block,
-            part_num
-        );
+    let file_name = format!(
+        "output/{}_blocks_{}_to_{}_part_{:03}.csv.gz",
+        chain,
+        start_block,
+        end_block,
+        part_num
+    );
 
     let file =
         File::create(&file_name)?;
@@ -650,7 +663,7 @@ fn write_addresses_file(
     let encoder =
         GzEncoder::new(
             file,
-            Compression::default()
+            Compression::default(),
         );
 
     let mut writer =
@@ -658,9 +671,7 @@ fn write_addresses_file(
             encoder
         );
 
-    writer.write_record(
-        ["address"]
-    )?;
+    writer.write_record(["address"])?;
 
     let mut sorted_addresses:
         Vec<&String> =
@@ -669,46 +680,27 @@ fn write_addresses_file(
     sorted_addresses.sort_unstable();
 
     for address in sorted_addresses {
-        writer.write_record(
-            [address]
-        )?;
+        writer.write_record([address])?;
     }
 
     writer.flush()?;
 
     println!();
-    println!(
-        "=============================================="
-    );
+    println!("==============================================");
     println!("PART COMPLETED");
-    println!(
-        "=============================================="
-    );
-
-    println!(
-        "Part           : {}",
-        part_num
-    );
-
+    println!("==============================================");
+    println!("Part           : {}", part_num);
     println!(
         "Blocks         : {} -> {}",
         start_block,
         end_block
     );
-
     println!(
         "Unique Address : {}",
         addresses.len()
     );
-
-    println!(
-        "File           : {}",
-        file_name
-    );
-
-    println!(
-        "=============================================="
-    );
+    println!("File           : {}", file_name);
+    println!("==============================================");
 
     Ok(file_name)
 }
@@ -729,39 +721,32 @@ async fn get_latest_block(
             index + 1
         );
 
-        let request =
-            client
-                .post(rpc)
-                .json(
-                    &json!({
-                        "jsonrpc": "2.0",
-                        "method": "eth_blockNumber",
-                        "params": [],
-                        "id": 1
-                    })
-                )
-                .send()
-                .await;
+        let request = client
+            .post(rpc)
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "method": "eth_blockNumber",
+                "params": [],
+                "id": 1
+            }))
+            .send()
+            .await;
 
-        let response =
-            match request {
-                Ok(r) => r,
+        let response = match request {
+            Ok(r) => r,
 
-                Err(e) => {
-                    println!(
-                        "RPC #{} connection failed: {}",
-                        index + 1,
-                        e
-                    );
+            Err(e) => {
+                println!(
+                    "RPC #{} connection failed: {}",
+                    index + 1,
+                    e
+                );
 
-                    continue;
-                }
-            };
+                continue;
+            }
+        };
 
-        if !response
-            .status()
-            .is_success()
-        {
+        if !response.status().is_success() {
             println!(
                 "RPC #{} returned HTTP {}",
                 index + 1,
@@ -789,6 +774,18 @@ async fn get_latest_block(
                 }
             };
 
+        if let Some(error) =
+            value.get("error")
+        {
+            println!(
+                "RPC #{} returned RPC error: {}",
+                index + 1,
+                error
+            );
+
+            continue;
+        }
+
         if let Some(result) =
             value
                 .get("result")
@@ -813,31 +810,26 @@ async fn get_latest_block(
         );
     }
 
-    Err(
-        RpcError::new(
-            "could not obtain latest block from any RPC"
-        )
-    )
+    Err(RpcError::new(
+        "could not obtain latest block from any RPC",
+    ))
 }
 
 // ============================================================
 // ARGUMENT PARSER
 // ============================================================
 
-fn get_arg(
-    name: &str
-) -> Option<String> {
-    let args:
-        Vec<String> =
+fn get_arg(name: &str) -> Option<String> {
+    let args: Vec<String> =
         env::args().collect();
 
     for i in 0..args.len() {
-        if args[i] == name
-            && i + 1 < args.len()
-        {
-            return Some(
-                args[i + 1].clone()
-            );
+        if args[i] == name {
+            if i + 1 < args.len() {
+                return Some(
+                    args[i + 1].clone()
+                );
+            }
         }
     }
 
@@ -849,27 +841,16 @@ fn get_arg(
 // ============================================================
 
 #[tokio::main]
-async fn main()
-    -> Result<
-        (),
-        Box<dyn std::error::Error>
-    >
-{
+async fn main() -> Result<(), Box<dyn Error>> {
+    println!();
+    println!("=======================================================");
+    println!("        EVM BLOCKWISE ADDRESS EXTRACTOR v2.2");
+    println!("=======================================================");
     println!();
 
-    println!(
-        "======================================================="
-    );
-
-    println!(
-        "        EVM BLOCKWISE ADDRESS EXTRACTOR v2.1"
-    );
-
-    println!(
-        "======================================================="
-    );
-
-    println!();
+    // --------------------------------------------------------
+    // Chain
+    // --------------------------------------------------------
 
     let chain =
         get_arg("--chain")
@@ -879,6 +860,10 @@ async fn main()
             .unwrap_or_else(|| {
                 "bnb".to_string()
             });
+
+    // --------------------------------------------------------
+    // Start block
+    // --------------------------------------------------------
 
     let start_block: u64 =
         get_arg("--start-block")
@@ -890,6 +875,10 @@ async fn main()
             })
             .parse()?;
 
+    // --------------------------------------------------------
+    // End block
+    // --------------------------------------------------------
+
     let end_block: u64 =
         get_arg("--end-block")
             .or_else(|| {
@@ -900,16 +889,23 @@ async fn main()
             })
             .parse()?;
 
+    // --------------------------------------------------------
+    // Batch size
+    // --------------------------------------------------------
+
     let batch_size: u64 =
         get_arg("--batch-size")
             .or_else(|| {
                 env::var("BATCH_SIZE").ok()
             })
             .unwrap_or_else(|| {
-                DEFAULT_BATCH_SIZE
-                    .to_string()
+                DEFAULT_BATCH_SIZE.to_string()
             })
             .parse()?;
+
+    // --------------------------------------------------------
+    // Concurrency
+    // --------------------------------------------------------
 
     let concurrency: usize =
         get_arg("--concurrency")
@@ -917,29 +913,32 @@ async fn main()
                 env::var("CONCURRENCY").ok()
             })
             .unwrap_or_else(|| {
-                DEFAULT_CONCURRENCY
-                    .to_string()
+                DEFAULT_CONCURRENCY.to_string()
             })
             .parse()?;
+
+    // --------------------------------------------------------
+    // Validation
+    // --------------------------------------------------------
 
     if start_block > end_block {
         return Err(
             "start_block cannot be greater than end_block"
-                .into()
+                .into(),
         );
     }
 
     if batch_size == 0 {
         return Err(
             "batch_size must be greater than 0"
-                .into()
+                .into(),
         );
     }
 
     if concurrency == 0 {
         return Err(
             "concurrency must be greater than 0"
-                .into()
+                .into(),
         );
     }
 
@@ -970,6 +969,10 @@ async fn main()
 
     println!();
 
+    // --------------------------------------------------------
+    // RPCs
+    // --------------------------------------------------------
+
     let rpcs =
         rpc_list(&chain);
 
@@ -990,6 +993,10 @@ async fn main()
 
     println!();
 
+    // --------------------------------------------------------
+    // HTTP client
+    // --------------------------------------------------------
+
     let client =
         Client::builder()
             .connect_timeout(
@@ -1003,7 +1010,7 @@ async fn main()
             )
             .pool_max_idle_per_host(8)
             .user_agent(
-                "evm-blockwise-extractor/2.1"
+                "evm-blockwise-extractor/2.2"
             )
             .build()?;
 
@@ -1017,7 +1024,7 @@ async fn main()
     let latest_block =
         get_latest_block(
             &client,
-            &rpcs
+            &rpcs,
         )
         .await?;
 
@@ -1035,7 +1042,7 @@ async fn main()
                 end_block,
                 latest_block
             )
-            .into()
+            .into(),
         );
     }
 
@@ -1044,7 +1051,8 @@ async fn main()
     // ========================================================
 
     let release_tag =
-        env::var("RELEASE_TAG").ok();
+        env::var("RELEASE_TAG")
+            .ok();
 
     if let Some(tag) =
         &release_tag
@@ -1066,8 +1074,8 @@ async fn main()
     let mut part_start =
         start_block;
 
-    let mut part_num:
-        u32 = 1;
+    let mut part_num: u32 =
+        1;
 
     while part_start <= end_block {
         let part_end =
@@ -1099,7 +1107,7 @@ async fn main()
         );
 
         // ----------------------------------------------------
-        // CREATE BATCHES
+        // Create batches
         // ----------------------------------------------------
 
         let mut batches:
@@ -1124,9 +1132,7 @@ async fn main()
 
             batches.push(batch);
 
-            if batch_end ==
-                u64::MAX
-            {
+            if batch_end == u64::MAX {
                 break;
             }
 
@@ -1145,7 +1151,7 @@ async fn main()
         println!();
 
         // ----------------------------------------------------
-        // SHARED RPC DATA
+        // Shared data
         // ----------------------------------------------------
 
         let shared_client =
@@ -1155,10 +1161,10 @@ async fn main()
             Arc::new(rpcs.clone());
 
         // ----------------------------------------------------
-        // PROCESS BATCHES
+        // Process batches
         // ----------------------------------------------------
 
-        let mut stream =
+        let mut processing_stream =
             stream::iter(batches)
                 .map(|batch| {
                     let client =
@@ -1186,14 +1192,14 @@ async fn main()
                             fetch_batch_with_retry(
                                 &client,
                                 &rpcs,
-                                batch
+                                batch,
                             )
                             .await;
 
                         (
                             first,
                             last,
-                            result
+                            result,
                         )
                     }
                 })
@@ -1214,9 +1220,18 @@ async fn main()
         let mut total_addresses_seen:
             u64 = 0;
 
+        // ----------------------------------------------------
+        // Receive completed batches
+        // ----------------------------------------------------
+
         while let Some(
-            (first, last, result)
-        ) = stream.next().await
+            (
+                first,
+                last,
+                result,
+            )
+        ) =
+            processing_stream.next().await
         {
             match result {
                 Ok(addresses) => {
@@ -1229,13 +1244,11 @@ async fn main()
                             / 2)
                             as u64;
 
-                    for address in
-                        addresses
+                    for address
+                        in addresses
                     {
                         unique_addresses
-                            .insert(
-                                address
-                            );
+                            .insert(address);
                     }
                 }
 
@@ -1247,14 +1260,16 @@ async fn main()
                             last,
                             error
                         )
-                        .into()
+                        .into(),
                     );
                 }
             }
 
             processed_batches += 1;
 
-            if processed_batches % 100 == 0
+            if processed_batches
+                % 100
+                == 0
                 || processed_batches
                     == total_batches
             {
@@ -1264,7 +1279,8 @@ async fn main()
                             as f64
                         / total_batches
                             as f64
-                    ) * 100.0;
+                    )
+                        * 100.0;
 
                 let blocks_processed =
                     (
@@ -1301,7 +1317,7 @@ async fn main()
                 part_num,
                 part_start,
                 part_end,
-                &unique_addresses
+                &unique_addresses,
             )?;
 
         // ====================================================
@@ -1314,7 +1330,7 @@ async fn main()
             let uploaded =
                 upload_to_release(
                     tag,
-                    &file_name
+                    &file_name,
                 );
 
             if !uploaded {
@@ -1323,7 +1339,7 @@ async fn main()
                         "Could not upload {} to GitHub Release",
                         file_name
                     )
-                    .into()
+                    .into(),
                 );
             }
         }
@@ -1332,9 +1348,7 @@ async fn main()
         // NEXT PART
         // ====================================================
 
-        if part_end ==
-            u64::MAX
-        {
+        if part_end == u64::MAX {
             break;
         }
 
@@ -1342,7 +1356,16 @@ async fn main()
             part_end + 1;
 
         part_num += 1;
+
+        println!();
+        println!(
+            "Moving to next part..."
+        );
     }
+
+    // ========================================================
+    // COMPLETE
+    // ========================================================
 
     println!();
 
