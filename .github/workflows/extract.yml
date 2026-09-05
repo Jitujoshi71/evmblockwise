@@ -1,4 +1,3 @@
-```yaml
 name: EVM Block Range Address Extractor
 
 on:
@@ -7,8 +6,8 @@ on:
       chain:
         description: "Select EVM Chain"
         required: true
-        default: "bnb"
         type: choice
+        default: bnb
         options:
           - bnb
           - ethereum
@@ -21,17 +20,18 @@ on:
       start_block:
         description: "Start Block Number"
         required: true
-        default: "0"
         type: string
+        default: "0"
 
       end_block:
         description: "End Block Number"
         required: true
-        default: "5000000"
         type: string
+        default: "5000000"
 
 jobs:
   extract:
+    name: Extract EVM Addresses
     runs-on: ubuntu-latest
     timeout-minutes: 350
 
@@ -39,7 +39,7 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Rust
@@ -48,49 +48,46 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Verify GitHub CLI
-        run: gh --version
-
-      - name: Validate Block Range
+      - name: Validate Input
         env:
+          CHAIN: ${{ inputs.chain }}
           START_BLOCK: ${{ inputs.start_block }}
           END_BLOCK: ${{ inputs.end_block }}
-          CHAIN: ${{ inputs.chain }}
         run: |
           set -e
 
           echo "=============================================="
-          echo "VALIDATING BLOCK RANGE"
+          echo "EVM BLOCK RANGE EXTRACTOR"
           echo "=============================================="
           echo "Chain       : $CHAIN"
           echo "Start Block : $START_BLOCK"
           echo "End Block   : $END_BLOCK"
+          echo "=============================================="
 
           if ! [[ "$START_BLOCK" =~ ^[0-9]+$ ]]; then
-            echo "ERROR: Invalid start block."
+            echo "ERROR: Start block must be a number."
             exit 1
           fi
 
           if ! [[ "$END_BLOCK" =~ ^[0-9]+$ ]]; then
-            echo "ERROR: Invalid end block."
+            echo "ERROR: End block must be a number."
             exit 1
           fi
 
           if [ "$START_BLOCK" -gt "$END_BLOCK" ]; then
-            echo "ERROR: Start block is greater than end block."
+            echo "ERROR: Start block cannot be greater than end block."
             exit 1
           fi
 
           TOTAL=$((END_BLOCK - START_BLOCK + 1))
 
-          echo "Total Blocks: $TOTAL"
-          echo "=============================================="
+          echo "Total blocks: $TOTAL"
 
-      - name: Build Release
+      - name: Build
         run: |
           cargo build --release
 
-      - name: Create GitHub Release
+      - name: Create Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CHAIN: ${{ inputs.chain }}
@@ -103,17 +100,11 @@ jobs:
 
           echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
 
-          echo "=============================================="
-          echo "CREATING RELEASE"
-          echo "=============================================="
-          echo "Tag: $TAG"
-          echo "=============================================="
-
           gh release create "$TAG" \
             --title "${CHAIN} blocks ${START_BLOCK}-${END_BLOCK}" \
-            --notes "Address extraction for ${CHAIN} blocks ${START_BLOCK} to ${END_BLOCK}."
+            --notes "Address extraction for ${CHAIN}, blocks ${START_BLOCK} to ${END_BLOCK}."
 
-      - name: Run Extraction
+      - name: Run Extractor
         env:
           TARGET_CHAIN: ${{ inputs.chain }}
           START_BLOCK: ${{ inputs.start_block }}
@@ -124,45 +115,20 @@ jobs:
         run: |
           set -e
 
-          echo "=============================================="
-          echo "STARTING EXTRACTION"
-          echo "=============================================="
-          echo "Chain       : $TARGET_CHAIN"
-          echo "Start Block : $START_BLOCK"
-          echo "End Block   : $END_BLOCK"
-          echo "Release     : $RELEASE_TAG"
-          echo "=============================================="
-
           ./target/release/evm-address-extractor \
             --chain "$TARGET_CHAIN" \
             --start-block "$START_BLOCK" \
             --end-block "$END_BLOCK"
 
-      - name: List Generated Files
+      - name: Show Output
         if: always()
         run: |
           echo "=============================================="
-          echo "GENERATED FILES"
+          echo "OUTPUT"
           echo "=============================================="
 
           if [ -d output ]; then
-            find output -maxdepth 1 -type f -printf "%f\n" | sort
+            ls -lah output/
           else
-            echo "No output directory."
+            echo "No output directory found."
           fi
-
-      - name: Extraction Complete
-        if: success()
-        env:
-          CHAIN: ${{ inputs.chain }}
-          START_BLOCK: ${{ inputs.start_block }}
-          END_BLOCK: ${{ inputs.end_block }}
-        run: |
-          echo "=============================================="
-          echo "EXTRACTION COMPLETE"
-          echo "=============================================="
-          echo "Chain       : $CHAIN"
-          echo "Start Block : $START_BLOCK"
-          echo "End Block   : $END_BLOCK"
-          echo "=============================================="
-```
